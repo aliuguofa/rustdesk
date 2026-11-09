@@ -206,7 +206,17 @@ jobs:
       - name: Patch flutter
         run: |
           cd $(dirname $(dirname $(which flutter)))
-          git apply ${{ github.workspace }}/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff
+          flutter --version
+          PATCH="${{ github.workspace }}/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff"
+          if git apply --check "$PATCH"; then
+            git apply "$PATCH"
+            echo "Applied Flutter dropdown_menu patch."
+          elif git apply --reverse --check "$PATCH"; then
+            echo "::notice::Flutter dropdown_menu patch is already applied (cached SDK), skipping."
+          else
+            echo "::error::Flutter dropdown_menu patch neither applies nor is already applied. Check the Flutter SDK version."
+            exit 1
+          fi
 
       - uses: nttld/setup-ndk@ed92fe6cadad69be94a966a7ee3271275e62f779 # v1
         id: setup-ndk
@@ -357,7 +367,17 @@ jobs:
       - name: Patch flutter
         run: |
           cd $(dirname $(dirname $(which flutter)))
-          git apply ${{ github.workspace }}/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff
+          flutter --version
+          PATCH="${{ github.workspace }}/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff"
+          if git apply --check "$PATCH"; then
+            git apply "$PATCH"
+            echo "Applied Flutter dropdown_menu patch."
+          elif git apply --reverse --check "$PATCH"; then
+            echo "::notice::Flutter dropdown_menu patch is already applied (cached SDK), skipping."
+          else
+            echo "::error::Flutter dropdown_menu patch neither applies nor is already applied. Check the Flutter SDK version."
+            exit 1
+          fi
 
       - uses: nttld/setup-ndk@ed92fe6cadad69be94a966a7ee3271275e62f779 # v1
         id: setup-ndk
