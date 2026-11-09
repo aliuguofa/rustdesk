@@ -14,10 +14,20 @@ name: Build Android APK
 on:
   workflow_dispatch:
     inputs:
+      abi:
+        description: "构建哪个 ABI（x86_64 一般只用于模拟器）"
+        type: choice
+        options:
+          - arm64
+          - arm64+armv7
+          - armv7
+          - x86_64
+          - all
+        default: arm64
       universal:
-        description: "额外构建通用 APK（arm64 + armv7 + x86_64 合并）"
+        description: "额外构建通用 APK（会自动构建全部 ABI）"
         type: boolean
-        default: true
+        default: false
 
 permissions:
   contents: read
@@ -34,6 +44,33 @@ env:
   VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
 
 jobs:
+  prepare:
+    name: Prepare ABI matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.value }}
+    steps:
+      - name: Compute build matrix
+        id: matrix
+        run: |
+          A='{"arch":"aarch64","target":"aarch64-linux-android","abi":"arm64-v8a","platform":"android-arm64","ndk-script":"ndk_arm64.sh","libcxx-triple":"aarch64-linux-android"}'
+          B='{"arch":"armv7","target":"armv7-linux-androideabi","abi":"armeabi-v7a","platform":"android-arm","ndk-script":"ndk_arm.sh","libcxx-triple":"arm-linux-androideabi"}'
+          C='{"arch":"x86_64","target":"x86_64-linux-android","abi":"x86_64","platform":"android-x64","ndk-script":"ndk_x64.sh","libcxx-triple":"x86_64-linux-android"}'
+          if [ "${{ inputs.universal }}" = "true" ]; then
+            selection="all"
+          else
+            selection="${{ inputs.abi }}"
+          fi
+          case "$selection" in
+            all)         value="[$A,$B,$C]" ;;
+            arm64+armv7) value="[$A,$B]"   ;;
+            armv7)       value="[$B]"       ;;
+            x86_64)      value="[$C]"       ;;
+            *)           value="[$A]"       ;;
+          esac
+          echo "Selected ABI(s): $selection"
+          echo "value=$value" >> "$GITHUB_OUTPUT"
+
   generate-bridge:
     name: Generate flutter-rust bridge
     runs-on: ubuntu-22.04
@@ -117,8 +154,8 @@ jobs:
           if-no-files-found: error
 
   build-android:
-    name: Android ${{ matrix.job.abi }}
-    needs: [generate-bridge]
+    name: Android ${{ matrix.abi }}
+    needs: [prepare, generate-bridge]
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     env:
@@ -126,31 +163,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        job:
-          - {
-              arch: aarch64,
-              target: aarch64-linux-android,
-              abi: arm64-v8a,
-              platform: android-arm64,
-              ndk-script: ndk_arm64.sh,
-              libcxx-triple: aarch64-linux-android,
-            }
-          - {
-              arch: armv7,
-              target: armv7-linux-androideabi,
-              abi: armeabi-v7a,
-              platform: android-arm,
-              ndk-script: ndk_arm.sh,
-              libcxx-triple: arm-linux-androideabi,
-            }
-          - {
-              arch: x86_64,
-              target: x86_64-linux-android,
-              abi: x86_64,
-              platform: android-x64,
-              ndk-script: ndk_x64.sh,
-              libcxx-triple: x86_64-linux-android,
-            }
+        include: ${{ fromJSON(needs.prepare.outputs.matrix) }}
     steps:
       - name: Free disk space (Ubuntu)
         uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
@@ -234,7 +247,7 @@ jobs:
       - name: Install vcpkg dependencies
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
-        run: ./flutter/build_android_deps.sh ${{ matrix.job.abi }}
+        run: ./flutter/build_android_deps.sh ${{ matrix.abi }}
 
       - name: Restore bridge files
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -246,13 +259,13 @@ jobs:
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
-          targets: ${{ matrix.job.target }}
+          targets: ${{ matrix.target }}
           components: "rustfmt"
 
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           prefix-key: aliudesk-android
-          key: ${{ matrix.job.target }}
+          key: ${{ matrix.target }}
 
       - name: Cache cargo-ndk
         uses: actions/cache@v4
@@ -267,16 +280,16 @@ jobs:
         run: |
           command -v cargo-ndk >/dev/null || \
             cargo install cargo-ndk --version ${{ env.CARGO_NDK_VERSION }} --locked
-          ./flutter/${{ matrix.job.ndk-script }}
-          mkdir -p ./flutter/android/app/src/main/jniLibs/${{ matrix.job.abi }}
-          cp ./target/${{ matrix.job.target }}/release/liblibrustdesk.so \
-             ./flutter/android/app/src/main/jniLibs/${{ matrix.job.abi }}/librustdesk.so
+          ./flutter/${{ matrix.ndk-script }}
+          mkdir -p ./flutter/android/app/src/main/jniLibs/${{ matrix.abi }}
+          cp ./target/${{ matrix.target }}/release/liblibrustdesk.so \
+             ./flutter/android/app/src/main/jniLibs/${{ matrix.abi }}/librustdesk.so
 
       - name: Upload librustdesk.so
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: librustdesk.so.${{ matrix.job.target }}
-          path: ./target/${{ matrix.job.target }}/release/liblibrustdesk.so
+          name: librustdesk.so.${{ matrix.target }}
+          path: ./target/${{ matrix.target }}/release/liblibrustdesk.so
 
       - name: Configure release signing
         if: env.HAS_ANDROID_SIGNING_KEY == 'true'
@@ -307,19 +320,19 @@ jobs:
         run: |
           export PATH=/usr/lib/jvm/java-17-openjdk-amd64/bin:$PATH
           sed -i 's/org.gradle.jvmargs=-Xmx1024M/org.gradle.jvmargs=-Xmx2g/g' ./flutter/android/gradle.properties
-          cp "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/${{ matrix.job.libcxx-triple }}/libc++_shared.so" \
-             ./flutter/android/app/src/main/jniLibs/${{ matrix.job.abi }}/
+          cp "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/${{ matrix.libcxx-triple }}/libc++_shared.so" \
+             ./flutter/android/app/src/main/jniLibs/${{ matrix.abi }}/
           pushd flutter
-          flutter build apk --release --target-platform ${{ matrix.job.platform }} --split-per-abi
+          flutter build apk --release --target-platform ${{ matrix.platform }} --split-per-abi
           popd
           mkdir -p out
-          cp "./flutter/build/app/outputs/flutter-apk/app-${{ matrix.job.abi }}-release.apk" \
-             "out/aliudesk-${APP_VERSION}-${{ matrix.job.arch }}.apk"
+          cp "./flutter/build/app/outputs/flutter-apk/app-${{ matrix.abi }}-release.apk" \
+             "out/aliudesk-${APP_VERSION}-${{ matrix.arch }}.apk"
 
       - name: Upload APK
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: aliudesk-${{ env.APP_VERSION }}-${{ matrix.job.arch }}.apk
+          name: aliudesk-${{ env.APP_VERSION }}-${{ matrix.arch }}.apk
           path: out/aliudesk-*.apk
           if-no-files-found: error
 
